@@ -1,27 +1,57 @@
-<?php 
+<?php
 
-namespace DanielGausi\CalendarEditorBundle\Modules;
+namespace Diversworld\CalendarEditorBundle\Controller\Module;
 
-use BackendTemplate;
+use Contao\BackendTemplate;
+use Contao\CoreBundle\Security\Authentication\Token\TokenChecker;
 use Contao\Date;
+use Contao\FrontendUser;
 use Contao\PageModel;
 use Contao\StringUtil;
 use Contao\System;
-use DanielGausi\CalendarEditorBundle\Models\CalendarModelEdit;
-use DanielGausi\CalendarEditorBundle\Services\CheckAuthService;
-use ModuleCalendar;
+use Diversworld\CalendarEditorBundle\Models\CalendarModelEdit;
+use Diversworld\CalendarEditorBundle\Services\CheckAuthService;
+use Contao\ModuleCalendar;
+use Contao\CoreBundle\Routing\ScopeMatcher;
+use Doctrine\DBAL\Connection;
+use Psr\Log\LoggerInterface;
+use Symfony\Component\HttpFoundation\RequestStack;
 
-class ModuleCalenderEdit extends ModuleCalendar
+class ModuleCalendarEdit extends ModuleCalendar
 {
 	// variable which indicates whether events can be added or not (on elapsed days)
 	protected bool $allowElapsedEvents;
 	protected bool $allowEditEvents;
-		
-	
+
+    private ScopeMatcher $scopeMatcher; // Dependency Injection für ScopeMatcher
+    private RequestStack $requestStack; // Dependency Injection für RequestStack
+    private ?CheckAuthService $checkAuthService;
+
+    private LoggerInterface $logger;
+
+    protected function initializeLogger(): void
+    {
+        $this->logger = System::getContainer()->get('monolog.logger.contao.general');
+    }
+
+    public function setCheckAuthService(CheckAuthService $checkAuthService): void
+    {
+        $this->checkAuthService = $checkAuthService;
+    }
+
+    protected function initializeServices(): void
+    {
+        $container = System::getContainer();
+        $this->checkAuthService = $container->get('Diversworld\CalendarEditorBundle\Services\CheckAuthService');
+
+        $this->scopeMatcher = $container->get('contao.routing.scope_matcher');
+        $this->requestStack = $container->get('request_stack');
+    }
+
 	public function getHolidayCalendarIDs($cals): array
     {
-		$IDs = array();		
-		
+		$IDs = array();
+
 		if (is_array($cals)) {
 		foreach ($cals as $flupp) {
 			$IDs[] = $flupp;
@@ -33,16 +63,15 @@ class ModuleCalenderEdit extends ModuleCalendar
 	// check whether the current FE User is allowed to edit any of the calendars
 	public function checkUserAuthorizations($arrCalendars): void
     {
-        /** @var CheckAuthService $checkAuthService */
-        $checkAuthService = System::getContainer()->get('caledit.service.auth');
-		$this->import('FrontendUser', 'User');			
+        $this->User = FrontendUser::getInstance();
+
 		$this->allowElapsedEvents = false;
 		$this->allowEditEvents = false;
-				
+
 		$calendarModels = CalendarModelEdit::findByIds($arrCalendars);
 		foreach($calendarModels as $calendarModel) {
-			$this->allowElapsedEvents = ($this->allowElapsedEvents || $checkAuthService->isUserAuthorizedElapsedEvents($calendarModel, $this->User) );
-			$this->allowEditEvents    = ($this->allowEditEvents    || $checkAuthService->isUserAuthorized($calendarModel, $this->User) );
+			$this->allowElapsedEvents = ($this->allowElapsedEvents || $this->checkAuthService->isUserAuthorizedElapsedEvents($calendarModel, $this->User) );
+			$this->allowEditEvents    = ($this->allowEditEvents    || $this->checkAuthService->isUserAuthorized($calendarModel, $this->User) );
 		}
 	}
 
@@ -71,14 +100,14 @@ class ModuleCalenderEdit extends ModuleCalendar
 
 		$intYear = date('Y', $this->Date->tstamp);
 		$intMonth = date('m', $this->Date->tstamp);
-		
+
 		$intColumnCount = -1;
 		$intNumberOfRows = ceil(($intDaysInMonth + $intFirstDayOffset) / 7);
 		$allEvents = $this->getAllEvents($this->cal_calendar, $this->Date->monthBegin, $this->Date->monthEnd);
 		$arrDays = [];
 
-		$dateformat = $GLOBALS['TL_CONFIG']['dateFormat'];	
-		
+		$dateformat = $GLOBALS['TL_CONFIG']['dateFormat'];
+
 		// Compile days
 		for ($i=1; $i<=($intNumberOfRows * 7); $i++)
 		{
@@ -108,7 +137,7 @@ class ModuleCalenderEdit extends ModuleCalendar
 
 			$arrDays[$strWeekClass][$i]['addLabel'] = $GLOBALS['TL_LANG']['MSC']['caledit_addLabel'];
 			$arrDays[$strWeekClass][$i]['addTitle'] = $GLOBALS['TL_LANG']['MSC']['caledit_addTitle'];
-			
+
 			// Inactive days
 			if (empty($intKey) || !isset($allEvents[$intKey]))
 			{
@@ -122,8 +151,8 @@ class ModuleCalenderEdit extends ModuleCalendar
 				$arrDays[$strWeekClass][$i]['events'] = [];
 
 				continue;
-			}		
-			
+			}
+
 			$events = [];
 			$holidayEvents = [];
 
@@ -143,29 +172,31 @@ class ModuleCalenderEdit extends ModuleCalendar
 					}
 				}
 			}
-			
+
 			if (count($holidayEvents) > 0) {
 				$strClass .= ' holiday';
 			}
 
-			$arrDays[$strWeekClass][$i]['label'] = $intDay;				
+			$arrDays[$strWeekClass][$i]['label'] = $intDay;
 			if ($this->allowEditEvents && ($this->allowElapsedEvents || ($intKey >= date('Ymd')) )  ){
 				$ts = mktime(8, 0, 0, $intMonth, $intDay, $intYear); // 8:00 at this day
 				$arrDays[$strWeekClass][$i]['addRef'] = $addUrl . '?add=' . Date::parse($dateformat, $ts);
 			}
 			$arrDays[$strWeekClass][$i]['class'] = 'days active' . $strClass;
 			$arrDays[$strWeekClass][$i]['href'] = $this->strLink . '?day=' . $intKey;
-			$arrDays[$strWeekClass][$i]['title'] = sprintf(specialchars($GLOBALS['TL_LANG']['MSC']['cal_events']), count($events));
+			$arrDays[$strWeekClass][$i]['title'] = sprintf($GLOBALS['TL_LANG']['MSC']['cal_events'], count($events));
 			$arrDays[$strWeekClass][$i]['events'] = $events;
 			$arrDays[$strWeekClass][$i]['holidayEvents'] = $holidayEvents;
 		}
-
 		return $arrDays;
 	}
-	
+
 	public function generate(): string
     {
-        if (TL_MODE == 'BE') {
+        $this->initializeServices();
+        $request = $this->requestStack->getCurrentRequest();
+
+        if ($this->scopeMatcher->isBackendRequest($request)) {
             $objTemplate = new BackendTemplate('be_wildcard');
 
             $objTemplate->wildcard = '### CALENDAR WITH FE EDITING ###';
@@ -175,17 +206,16 @@ class ModuleCalenderEdit extends ModuleCalendar
             $objTemplate->href = 'contao/main.php?do=themes&amp;table=tl_module&amp;act=edit&amp;id=' . $this->id;
 
             return $objTemplate->parse();
-        }       
+        }
 
         return parent::generate();
     }
-
 
 	/**
 	 * Generate module
 	 */
 	protected function compile(): void
     {
-        parent::compile();         	
+        parent::compile();
 	}
 }
